@@ -1,11 +1,10 @@
-"""
-Implementation of launch agent.
-"""
+"""Implementation of launch agent."""
 
 import logging
 import os
 import pprint
 import time
+import traceback
 from typing import Any, Dict, List, Union
 
 import wandb
@@ -21,8 +20,8 @@ from ..runner.loader import load_backend
 from ..utils import (
     LAUNCH_DEFAULT_PROJECT,
     LOG_PREFIX,
-    PROJECT_DOCKER_ARGS,
     PROJECT_SYNCHRONOUS,
+    LaunchError,
     resolve_build_and_registry_config,
 )
 
@@ -36,7 +35,7 @@ _logger = logging.getLogger(__name__)
 
 
 def _convert_access(access: str) -> str:
-    """Converts access string to a value accepted by wandb."""
+    """Convert access string to a value accepted by wandb."""
     access = access.upper()
     assert (
         access == "PROJECT" or access == "USER"
@@ -100,14 +99,22 @@ class LaunchAgent:
 
     def print_status(self) -> None:
         """Prints the current status of the agent."""
-        if self._project == LAUNCH_DEFAULT_PROJECT:
-            wandb.termlog(
-                f"{LOG_PREFIX}agent {self._name} polling on queues {','.join(self._queues)} for jobs"
-            )
-        else:
-            wandb.termlog(
-                f"{LOG_PREFIX}agent {self._name} polling on project {self._project}, queues {','.join(self._queues)} for jobs"
-            )
+        output_str = "agent "
+        if self._name:
+            output_str += f"{self._name} "
+        if self._running < self._max_jobs:
+            output_str += "polling on "
+            if self._project != LAUNCH_DEFAULT_PROJECT:
+                output_str += f"project {self._project}, "
+            output_str += f"queues {','.join(self._queues)}, "
+        output_str += (
+            f"running {self._running} out of a maximum of {self._max_jobs} jobs"
+        )
+
+        wandb.termlog(f"{LOG_PREFIX}{output_str}")
+        if self._running > 0:
+            output_str += f": {','.join([str(key) for key in self._jobs.keys()])}"
+        _logger.info(output_str)
 
     def update_status(self, status: str) -> None:
         update_ret = self._api.update_launch_agent_status(
@@ -130,7 +137,15 @@ class LaunchAgent:
         try:
             if self._jobs[job_id].get_status().state in ["failed", "finished"]:
                 self.finish_job_id(job_id)
-        except Exception:
+        except Exception as e:
+            if isinstance(e, LaunchError):
+                wandb.termerror(f"Terminating job {job_id} because it failed to start:")
+                wandb.termerror(str(e))
+            _logger.info("---")
+            _logger.info("Caught exception while getting status.")
+            _logger.info(f"Job ID: {job_id}")
+            _logger.info(traceback.format_exc())
+            _logger.info("---")
             self.finish_job_id(job_id)
 
     def run_job(self, job: Dict[str, Any]) -> None:
@@ -157,8 +172,6 @@ class LaunchAgent:
         _logger.info("Fetching resource...")
         resource = launch_spec.get("resource") or "local-container"
         backend_config: Dict[str, Any] = {
-            PROJECT_DOCKER_ARGS: (launch_spec.get("docker", {}) or {}).get("args", {})
-            or {},
             PROJECT_SYNCHRONOUS: False,  # agent always runs async
         }
 
@@ -207,17 +220,19 @@ class LaunchAgent:
                         if job:
                             try:
                                 self.run_job(job)
-                            except Exception as e:
-                                wandb.termerror(f"Error running job: {e}")
+                            except Exception:
+                                wandb.termerror(
+                                    f"Error running job: {traceback.format_exc()}"
+                                )
                                 self._api.ack_run_queue_item(job["runQueueItemId"])
                 for job_id in self.job_ids:
                     self._update_finished(job_id)
                 if self._ticks % 2 == 0:
                     if self._running == 0:
                         self.update_status(AGENT_POLLING)
-                        self.print_status()
                     else:
                         self.update_status(AGENT_RUNNING)
+                    self.print_status()
                 time.sleep(AGENT_POLLING_INTERVAL)
 
         except KeyboardInterrupt:
