@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class SockClientClosedError(Exception):
-    """Socket has been closed"""
+    """Socket has been closed."""
 
     pass
 
@@ -120,7 +120,7 @@ class SockClient:
 
     def _sendall_with_error_handle(self, data: bytes) -> None:
         # This is a helper function for sending data in a retry fashion.
-        # Similar to the sendall() function in the socket module, but with a
+        # Similar to the sendall() function in the socket module, but with
         # an error handling in case of timeout.
         total_sent = 0
         total_data = len(data)
@@ -159,7 +159,7 @@ class SockClient:
             self._send_message(msg)
         except BrokenPipeError:
             # TODO(jhr): user thread might no longer be around to receive responses to
-            # things like network status poll loop, there might be a better way to quiesce
+            #  things like network status poll loop, there might be a better way to quiesce
             pass
 
     def send_and_recv(
@@ -256,9 +256,9 @@ class SockClient:
             except socket.timeout:
                 break
             except ConnectionResetError:
-                raise SockClientClosedError()
+                raise SockClientClosedError
             except OSError:
-                raise SockClientClosedError()
+                raise SockClientClosedError
             finally:
                 if timeout:
                     self._sock.settimeout(None)
@@ -266,7 +266,7 @@ class SockClient:
             if data_len == 0:
                 # socket.recv() will return 0 bytes if socket was shutdown
                 # caller will handle this condition like other connection problems
-                raise SockClientClosedError()
+                raise SockClientClosedError
             self._buffer.put(data, data_len)
         return None
 

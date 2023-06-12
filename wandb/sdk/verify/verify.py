@@ -1,29 +1,28 @@
-"""
-Utilities for wandb verify
-"""
+"""Utilities for wandb verify."""
 import getpass
 import os
 import time
 from functools import partial
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import click
 import requests
 from pkg_resources import parse_version
-from wandb_gql import gql  # type: ignore
+from wandb_gql import gql
 
 import wandb
+from wandb.sdk.artifacts.artifact import Artifact
+from wandb.sdk.lib import runid
 
 from ...apis.internal import Api
-from ...apis.public import Artifact as ArtifactAPI
-from ..wandb_artifacts import Artifact
 
 PROJECT_NAME = "verify"
 GET_RUN_MAX_TIME = 10
 MIN_RETRYS = 3
 CHECKMARK = "\u2705"
 RED_X = "\u274C"
-ID_PREFIX = wandb.util.generate_id()
+ID_PREFIX = runid.generate_id()
 
 
 def nice_id(name):
@@ -224,7 +223,7 @@ def verify_manifest(
 
 
 def verify_digest(
-    downloaded: "ArtifactAPI", computed: "ArtifactAPI", fails_list: List[str]
+    downloaded: "Artifact", computed: "Artifact", fails_list: List[str]
 ) -> None:
     if downloaded.digest != computed.digest:
         fails_list.append(
@@ -252,11 +251,11 @@ def artifact_with_path_or_paths(
     with open(f"{verify_dir}/verify_1.txt", "w") as f:
         f.write("1")
     art.add_dir(verify_dir)
-    with open("verify_3.txt", "w") as f:
-        f.write("3")
+    file3 = Path(verify_dir) / "verify_3.txt"
+    file3.write_text("3")
 
     # reference to local file
-    art.add_reference("file://verify_3.txt")
+    art.add_reference(file3.resolve().as_uri())
 
     return art
 
@@ -268,14 +267,13 @@ def log_use_download_artifact(
     download_dir: str,
     failed_test_strings: List[str],
     add_extra_file: bool,
-) -> Tuple[bool, Optional["ArtifactAPI"], List[str]]:
+) -> Tuple[bool, Optional["Artifact"], List[str]]:
     with wandb.init(
         id=nice_id("log_artifact"),
         reinit=True,
         project=PROJECT_NAME,
         config={"test": "artifact log"},
     ) as log_art_run:
-
         if add_extra_file:
             with open("verify_2.txt", "w") as f:
                 f.write("2")
@@ -358,9 +356,7 @@ def check_artifacts() -> bool:
     verify_digest(download_artifact, computed, failed_test_strings)
 
     computed_manifest = computed.manifest.to_manifest_json()["contents"]
-    downloaded_manifest = download_artifact._load_manifest().to_manifest_json()[
-        "contents"
-    ]
+    downloaded_manifest = download_artifact.manifest.to_manifest_json()["contents"]
     verify_manifest(downloaded_manifest, computed_manifest, failed_test_strings)
 
     print_results(failed_test_strings, False)

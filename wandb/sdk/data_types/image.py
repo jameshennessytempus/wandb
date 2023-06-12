@@ -7,6 +7,8 @@ from urllib import parse
 
 import wandb
 from wandb import util
+from wandb.sdk.lib import hashutil, runid
+from wandb.sdk.lib.paths import LogicalPath
 
 from ._private import MEDIA_TMP
 from .base_types.media import BatchableMedia, Media
@@ -16,13 +18,12 @@ from .helper_types.image_mask import ImageMask
 
 if TYPE_CHECKING:  # pragma: no cover
     import matplotlib  # type: ignore
-    import numpy as np  # type: ignore
+    import numpy as np
     import torch  # type: ignore
     from PIL.Image import Image as PILImage
 
-    from wandb.apis.public import Artifact as PublicArtifact
+    from wandb.sdk.artifacts.artifact import Artifact
 
-    from ..wandb_artifacts import Artifact as LocalArtifact
     from ..wandb_run import Run as LocalRun
 
     ImageDataType = Union[
@@ -33,13 +34,16 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 def _server_accepts_image_filenames() -> bool:
-    from pkg_resources import parse_version
+    if util._is_offline():
+        return True
 
     # Newer versions of wandb accept large image filenames arrays
     # but older versions would have issues with this.
     max_cli_version = util._get_max_cli_version()
     if max_cli_version is None:
         return False
+    from pkg_resources import parse_version
+
     accepts_image_filenames: bool = parse_version("0.12.10") <= parse_version(
         max_cli_version
     )
@@ -296,7 +300,7 @@ class Image(BatchableMedia):
                 self.to_uint8(data), mode=mode or self.guess_mode(data)
             )
 
-        tmp_path = os.path.join(MEDIA_TMP.name, str(util.generate_id()) + ".png")
+        tmp_path = os.path.join(MEDIA_TMP.name, runid.generate_id() + ".png")
         self.format = "png"
         assert self._image is not None
         self._image.save(tmp_path, transparency=None)
@@ -304,11 +308,13 @@ class Image(BatchableMedia):
 
     @classmethod
     def from_json(
-        cls: Type["Image"], json_obj: dict, source_artifact: "PublicArtifact"
+        cls: Type["Image"], json_obj: dict, source_artifact: "Artifact"
     ) -> "Image":
-        classes = None
+        classes: Optional[Classes] = None
         if json_obj.get("classes") is not None:
-            classes = source_artifact.get(json_obj["classes"]["path"])
+            value = source_artifact.get(json_obj["classes"]["path"])
+            assert isinstance(value, (type(None), Classes))
+            classes = value
 
         masks = json_obj.get("masks")
         _masks: Optional[Dict[str, ImageMask]] = None
@@ -381,7 +387,7 @@ class Image(BatchableMedia):
                     run, key, step, id_, ignore_copy_err=ignore_copy_err
                 )
 
-    def to_json(self, run_or_artifact: Union["LocalRun", "LocalArtifact"]) -> dict:
+    def to_json(self, run_or_artifact: Union["LocalRun", "Artifact"]) -> dict:
         json_dict = super().to_json(run_or_artifact)
         json_dict["_type"] = Image._log_type
         json_dict["format"] = self.format
@@ -395,7 +401,7 @@ class Image(BatchableMedia):
         if self._caption:
             json_dict["caption"] = self._caption
 
-        if isinstance(run_or_artifact, wandb.wandb_sdk.wandb_artifacts.Artifact):
+        if isinstance(run_or_artifact, wandb.Artifact):
             artifact = run_or_artifact
             if (
                 self._masks is not None or self._boxes is not None
@@ -405,7 +411,7 @@ class Image(BatchableMedia):
                 )
 
             if self._classes is not None:
-                class_id = hashlib.md5(
+                class_id = hashutil._md5(
                     str(self._classes._class_set).encode("utf-8")
                 ).hexdigest()
                 class_name = os.path.join(
@@ -434,9 +440,7 @@ class Image(BatchableMedia):
         return json_dict
 
     def guess_mode(self, data: "np.ndarray") -> str:
-        """
-        Guess what type of image the np.array is representing
-        """
+        """Guess what type of image the np.array is representing."""
         # TODO: do we want to support dimensions being at the beginning of the array?
         if data.ndim == 2:
             return "L"
@@ -451,9 +455,10 @@ class Image(BatchableMedia):
 
     @classmethod
     def to_uint8(cls, data: "np.ndarray") -> "np.ndarray":
-        """
-        Converts floating point image on the range [0,1] and integer images
-        on the range [0,255] to uint8, clipping if necessary.
+        """Convert image data to uint8.
+
+        Convert floating point image on the range [0,1] and integer images on the range
+        [0,255] to uint8, clipping if necessary.
         """
         np = util.get_module(
             "numpy",
@@ -481,9 +486,7 @@ class Image(BatchableMedia):
         key: str,
         step: Union[int, str],
     ) -> dict:
-        """
-        Combines a list of images into a meta dictionary object describing the child images.
-        """
+        """Combine a list of images into a meta dictionary object describing the child images."""
         if TYPE_CHECKING:
             seq = cast(Sequence["Image"], seq)
 
@@ -492,7 +495,7 @@ class Image(BatchableMedia):
         media_dir = cls.get_media_subdir()
 
         for obj in jsons:
-            expected = util.to_forward_slash_path(media_dir)
+            expected = LogicalPath(media_dir)
             if "path" in obj and not obj["path"].startswith(expected):
                 raise ValueError(
                     "Files in an array of Image's must be in the {} directory, not {}".format(
@@ -527,7 +530,7 @@ class Image(BatchableMedia):
             ]
         else:
             wandb.termwarn(
-                "Unable to log image array filenames. In some cases, this can prevent images from being"
+                "Unable to log image array filenames. In some cases, this can prevent images from being "
                 "viewed in the UI. Please upgrade your wandb server",
                 repeat=False,
             )
